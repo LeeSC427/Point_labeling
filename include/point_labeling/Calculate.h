@@ -14,6 +14,7 @@ class Calculate
 
         cv::Point translate(const cv::Point& _prev_point, const cv::Point& _moved_point);
         cv::Point cornerCentroid(const std::vector<cv::Point>& _points);
+        cv::Point cornerCentroid(const std::vector<pointCorner>& _points);
 
         std::vector<cv::Point> angleOrdering(const std::vector<cv::Point>& _corners);
         void labelOrdering(std::vector<pointCorner>& _corners);
@@ -39,7 +40,8 @@ int Calculate::minIndex(const std::vector<double>& _vector)
 
 cv::Point Calculate::translate(const cv::Point& _prev_point, const cv::Point& _moved_point)
 {
-    cv::Point trans(_prev_point.x-_moved_point.x, _prev_point.y-_moved_point.y);
+    //cv::Point trans(_prev_point.x-_moved_point.x, _prev_point.y-_moved_point.y);
+    cv::Point trans(_moved_point.x-_prev_point.x, _moved_point.y-_prev_point.y);
     return trans;
 }
 
@@ -50,6 +52,19 @@ cv::Point Calculate::cornerCentroid(const std::vector<cv::Point>& _points)
     {
         centroid.x += _points[i].x;
         centroid.y += _points[i].y;
+    }
+    centroid.x /= _points.size();
+    centroid.y /= _points.size();
+    return centroid;
+}
+
+cv::Point Calculate::cornerCentroid(const std::vector<pointCorner>& _points)
+{
+    cv::Point centroid(0,0);
+    for(int i = 0; i < _points.size(); i++)
+    {
+        centroid.x += _points[i].coord.x;
+        centroid.y += _points[i].coord.y;
     }
     centroid.x /= _points.size();
     centroid.y /= _points.size();
