@@ -20,6 +20,7 @@ class Process
         std::mutex mtx_img;
         std::vector<pointCorner> prev_corner;
         bool initial_flag;
+        bool cornerDetectFail;
 
         void subscribe();
         void loop(const sensor_msgs::ImageConstPtr& _msg);
@@ -35,7 +36,7 @@ class Process
         void drawCorner(cv::Mat& _img, cv::Mat& _proc_img, std::vector<pointCorner> _corner_vec);
         void showVideo(cv::Mat& _img, cv::Mat& _proc_img);
 
-    Process(): initial_flag(true){}
+    Process(): initial_flag(true), cornerDetectFail(false){}
     ~Process(){}
 };
 
@@ -46,6 +47,7 @@ void Process::subscribe()
 
 void Process::loop(const sensor_msgs::ImageConstPtr& _msg)
 {
+    clock_t start = clock();
     mtx_img.lock();
     cv_bridge::CvImagePtr cv_ptr;
     try
@@ -66,35 +68,41 @@ void Process::loop(const sensor_msgs::ImageConstPtr& _msg)
     {
         std::vector<pointCorner> ordered_corner_vec;
         std::vector<cv::Point> corner_vec = findCorner(img, proc_img, contour);
-        if(initial_flag)
+        if(!corner_vec.empty())
         {
-            ordered_corner_vec = findFirstCorner(corner_vec);
-        }
-        else
-        {
-            if(!prev_corner.empty())
+            if(initial_flag)
             {
-                if(corner_vec.size() == 4)
-                {
-                    ordered_corner_vec = findMatchingCorner(corner_vec);
-                }
-                else
-                {
-                    prev_corner = prev_corner;
-                    initial_flag = true;
-                }
+                ordered_corner_vec = findFirstCorner(corner_vec);
+                prev_corner = ordered_corner_vec;
             }
             else
             {
-                initial_flag = true;
+                if(!prev_corner.empty())
+                {
+                    if(corner_vec.size() == 4)
+                    {
+                        ordered_corner_vec = findMatchingCorner(corner_vec);
+                        prev_corner = ordered_corner_vec;
+                    }
+                    else
+                    {
+                        prev_corner = prev_corner;
+                        initial_flag = true;
+                    }
+                }
+                else
+                {
+                    initial_flag = true;
+                }
             }
+            if(ordered_corner_vec.size() == 4)
+            {
+                drawCorner(img, proc_img, ordered_corner_vec);
+            }
+            checkPrevCoord(prev_corner);
         }
-        if(ordered_corner_vec.size() == 4)
-        {
-            drawCorner(img, proc_img, ordered_corner_vec);
-        }
-        prev_corner = ordered_corner_vec;
-        checkPrevCoord(prev_corner);
+        else
+            initial_flag = true;
     }
     else
     {
@@ -102,6 +110,8 @@ void Process::loop(const sensor_msgs::ImageConstPtr& _msg)
         prev_corner.clear();
     }
     showVideo(img, proc_img);
+    clock_t end = clock();
+    ROS_INFO("LOOP TIME: %lf", (double)(end-start)/CLOCKS_PER_SEC);
 }
 
 cv::Mat Process::Preprocess(cv::Mat& _img)
@@ -142,6 +152,7 @@ std::vector<cv::Point> Process::findContour(cv::Mat& _img, cv::Mat& _proc_img)
 
 std::vector<cv::Point> Process::findCorner(cv::Mat& _img, cv::Mat& _proc_img, std::vector<cv::Point>& _contour)
 {
+    double distThreshold = 10.0;
     double epsilon = 0.1 * cv::arcLength(_contour, true);
     std::vector<cv::Point> corners;
     std::vector<cv::Point2f> double_corners;
@@ -149,12 +160,27 @@ std::vector<cv::Point> Process::findCorner(cv::Mat& _img, cv::Mat& _proc_img, st
     cv::TermCriteria termcriteria(cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.1);
     cv::approxPolyDP(_contour, double_corners, epsilon, true);
     cv::cornerSubPix(_proc_img, double_corners, cv::Size(11,11), cv::Size(-1,-1), termcriteria);
-    for(int i = 0; i < double_corners.size(); i++)
+    if(double_corners.size() == 4)
     {
-        cv::Point temp_corner;
-        temp_corner.x = (int)double_corners[i].x;
-        temp_corner.y = (int)double_corners[i].y;
-        corners.push_back(temp_corner);
+        for(int i = 0; i < double_corners.size(); i++)
+        {
+            for(int j = i; j < double_corners.size(); ++j)
+            {
+                double dist = cal.distance(double_corners[i], double_corners[j]);
+                if(dist < distThreshold)
+                {
+                    cornerDetectFail = true;
+                    break;
+                }
+            }
+        }
+        for(int i = 0; i < double_corners.size(); i++)
+        {
+            cv::Point temp_corner;
+            temp_corner.x = (int)double_corners[i].x;
+            temp_corner.y = (int)double_corners[i].y;
+            corners.push_back(temp_corner);
+        }
     }
 
     return corners;
@@ -194,19 +220,18 @@ std::vector<pointCorner> Process::findMatchingCorner(std::vector<cv::Point>& _co
     cv::Point _prev_center;
 
     //for(int i = 0; i < temp_previous_corners.size(); i++)
-    //{
-    //    ROS_INFO("temp_previous_corners Label = %d, coordinate: (%d, %d)", temp_previous_corners[i].label, temp_previous_corners[i].coord.x, temp_previous_corners[i].coord.y);
+    //{    //    ROS_INFO("temp_previous_corners Label = %d, coordinate: (%d, %d)", temp_previous_corners[i].label, temp_previous_corners[i].coord.x, temp_previous_corners[i].coord.y);
     //}
 
     _center = cal.cornerCentroid(_corner_vec);
     _prev_center = cal.cornerCentroid(temp_previous_corners);
     for(int i = 0; i < _corner_vec.size(); i++)
     {
-        ROS_INFO("Cur conrer: coord = (%d, %d)", _corner_vec[i].x, _corner_vec[i].y);
+        ROS_INFO("[STEP 1] Cur conrer: coord = (%d, %d)", _corner_vec[i].x, _corner_vec[i].y);
     }
-    ROS_INFO("Cur_Center: (%d, %d), Prev_center: (%d, %d)", _center.x, _center.y, _prev_center.x, _prev_center.y);
+    ROS_INFO("[STEP 2] Cur_Center: (%d, %d), Prev_center: (%d, %d)", _center.x, _center.y, _prev_center.x, _prev_center.y);
     translate = cal.translate(_prev_center, _center);
-    ROS_INFO("translate = (%d, %d)", translate.x, translate.y);
+    ROS_INFO("[STEP 3] translate = (%d, %d)", translate.x, translate.y);
     for(int i = 0; i < _corner_vec.size(); i++)
     {
         cv::Point moved_corner;
@@ -215,10 +240,10 @@ std::vector<pointCorner> Process::findMatchingCorner(std::vector<cv::Point>& _co
         moved_corners.push_back(moved_corner);
     }
     cv::Point moved_center = cal.cornerCentroid(moved_corners);
-    ROS_INFO("moved_center = (%d, %d)", moved_center.x, moved_center.y);
+    ROS_INFO("[STEP 4] moved_center = (%d, %d)", moved_center.x, moved_center.y);
     for(int i = 0; i < prev_corner.size(); i++)
     {
-        ROS_INFO("Temp_previous_corners: label %d, coord: (%d, %d)", temp_previous_corners[i].label, temp_previous_corners[i].coord.x, temp_previous_corners[i].coord.y);
+        ROS_INFO("[STEP 5] Temp_previous_corners: label %d, coord: (%d, %d)", temp_previous_corners[i].label, temp_previous_corners[i].coord.x, temp_previous_corners[i].coord.y);
         temp_previous_coords.push_back(temp_previous_corners[i].coord);
         temp_previous_labels.push_back(temp_previous_corners[i].label);
     }
@@ -231,22 +256,30 @@ std::vector<pointCorner> Process::findMatchingCorner(std::vector<cv::Point>& _co
         for(int j = 0; j < temp_previous_corners.size(); j++)
         {
             double dist = cal.distance(moved_corners[i], temp_previous_coords[j]);
+            if(i == 0)
+            {
+                ROS_INFO("Distance from CURRENT POINT %d to PREVIOUS POINT %d: %lf", i, j, dist);
+            }
             if(dist < minDistance)
             {
                 minDistance = dist;
-                matchedIndex = j;
+                matchedIndex = temp_previous_labels[j];
             }
         }
+        if(i == 0)
+            ROS_INFO("MATCHED INDEX: %d", matchedIndex);
         matchedIndices.push_back(matchedIndex);
-        temp_corner.coord = _corner_vec[matchedIndex];
+        temp_corner.coord = _corner_vec[i];
         temp_corner.label = matchedIndex;
         temp_corner_vec.push_back(temp_corner);
+        ROS_INFO("[STEP 6] CHECKING...CORNER %d goes to label %d", i, matchedIndex);
     }
     cal.labelOrdering(temp_corner_vec);
     for(int i = 0; i < temp_corner_vec.size(); i++)
     {
-        ROS_INFO("IN FIND_MATCHING_CORNER: Corner %d Coordinate: (%d, %d)", temp_corner_vec[i].label, temp_corner_vec[i].coord.x, temp_corner_vec[i].coord.y);
+        ROS_INFO("[STEP 7] IN FIND_MATCHING_CORNER: Corner %d Coordinate: (%d, %d)", temp_corner_vec[i].label, temp_corner_vec[i].coord.x, temp_corner_vec[i].coord.y);
     }
+    ROS_INFO("[STEP 8] MATCHEDINDICES elements: [%d, %d, %d, %d]", matchedIndices[0],matchedIndices[1],matchedIndices[2],matchedIndices[3]);
 
     return temp_corner_vec;
 }
